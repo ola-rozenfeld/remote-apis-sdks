@@ -7,9 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/chunker"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/command"
+	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
+	"github.com/bazelbuild/remote-apis-sdks/go/pkg/filemetadata"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/outerr"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/tree"
 	"github.com/golang/protobuf/proto"
@@ -89,11 +90,15 @@ func (ec *Context) setOutputMetadata() {
 	}
 	ec.Metadata.OutputFiles = len(ec.resPb.OutputFiles) + len(ec.resPb.OutputFileSymlinks)
 	ec.Metadata.OutputDirectories = len(ec.resPb.OutputDirectories) + len(ec.resPb.OutputDirectorySymlinks)
-	ec.Metadata.OutputDigests = make(map[string]digest.Digest)
+	ec.Metadata.OutputMetadata = make(map[string]*filemetadata.Metadata)
 	ec.Metadata.TotalOutputBytes = 0
 	for _, file := range ec.resPb.OutputFiles {
 		dg := digest.NewFromProtoUnvalidated(file.Digest)
-		ec.Metadata.OutputDigests[file.Path] = dg
+		m := &filemetadata.Metadata{
+			Digest:       dg,
+			IsExecutable: file.IsExecutable,
+		}
+		ec.Metadata.OutputMetadata[file.Path] = m
 		ec.Metadata.TotalOutputBytes += dg.Size
 	}
 	if ec.resPb.StdoutRaw != nil {

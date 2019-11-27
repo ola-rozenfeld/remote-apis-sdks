@@ -10,9 +10,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/command"
+	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/fakes"
+	"github.com/bazelbuild/remote-apis-sdks/go/pkg/filemetadata"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/outerr"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/go-cmp/cmp"
@@ -60,7 +61,9 @@ func TestExecCacheHit(t *testing.T) {
 			TotalInputBytes:  fooDirDg.Size + cmdDg.Size + acDg.Size + fooDg.Size,
 			OutputFiles:      1,
 			TotalOutputBytes: 18, // "output" + "stdout" + "stderr"
-			OutputDigests:    map[string]digest.Digest{"a/b/out": digest.NewFromBlob([]byte("output"))},
+			OutputMetadata: map[string]*filemetadata.Metadata{
+				"a/b/out": &filemetadata.Metadata{Digest: digest.NewFromBlob([]byte("output"))},
+			},
 		}
 		if diff := cmp.Diff(wantRes, res); diff != "" {
 			t.Errorf("Run() gave result diff (-want +got):\n%s", diff)

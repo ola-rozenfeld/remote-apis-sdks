@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
+	"github.com/bazelbuild/remote-apis-sdks/go/pkg/filemetadata"
 	"github.com/pborman/uuid"
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
@@ -432,8 +433,8 @@ type Metadata struct {
 	OutputDirectories int
 	// The overall number of bytes from all the output files (incl. stdout/stderr, but not symlinks).
 	TotalOutputBytes int64
-	// Output digests.
-	OutputDigests map[string]digest.Digest
+	// Output metadata.
+	OutputMetadata map[string]*filemetadata.Metadata
 	// TODO(olaola): Add a lot of other fields.
 }
 
