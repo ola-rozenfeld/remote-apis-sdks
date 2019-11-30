@@ -365,3 +365,10 @@ func (c *Client) Run(ctx context.Context, cmd *command.Command, opt *command.Exe
 	// TODO(olaola): implement the cache-miss-retry loop.
 	return ec.Result, ec.Metadata
 }
+
+// Run executes a graph remotely.
+func (c *Client) RunGraph(ctx context.Context, cmds []*command.Command, graphInputs []string, oe outerr.OutErr) (*command.Result, *command.Metadata) {
+	// Add separate result, metadata types
+	// Add graph execution options later.
+	return nil, nil
+}

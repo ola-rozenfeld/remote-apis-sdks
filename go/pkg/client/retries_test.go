@@ -111,6 +111,10 @@ func (f *flakyServer) FindMissingBlobs(ctx context.Context, req *repb.FindMissin
 	return nil, f.flakeAndFail("FindMissingBlobs")
 }
 
+func (f *flakyServer) FindMissingGraphInputs(*repb.FindMissingGraphInputsRequest, regrpc.ContentAddressableStorage_FindMissingGraphInputsServer) error {
+	return f.flakeAndFail("FindMissingGraphInputs")
+}
+
 func (f *flakyServer) BatchUpdateBlobs(ctx context.Context, req *repb.BatchUpdateBlobsRequest) (*repb.BatchUpdateBlobsResponse, error) {
 	return nil, f.flakeAndFail("BatchUpdateBlobs")
 }
@@ -172,6 +176,10 @@ func (f *flakyServer) WaitExecution(req *repb.WaitExecutionRequest, stream regrp
 		return e
 	}
 	return stream.Send(&oppb.Operation{Name: "op", Done: true, Result: &oppb.Operation_Response{Response: any}})
+}
+
+func (s *flakyServer) ExecuteGraph(stream regrpc.Execution_ExecuteGraphServer) (err error) {
+	return nil
 }
 
 func (f *flakyServer) GetOperation(ctx context.Context, req *oppb.GetOperationRequest) (*oppb.Operation, error) {

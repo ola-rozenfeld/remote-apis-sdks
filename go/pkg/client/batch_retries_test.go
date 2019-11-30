@@ -32,6 +32,10 @@ func (f *flakyBatchServer) FindMissingBlobs(ctx context.Context, req *repb.FindM
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
+func (f *flakyBatchServer) FindMissingGraphInputs(*repb.FindMissingGraphInputsRequest, regrpc.ContentAddressableStorage_FindMissingGraphInputsServer) error {
+	return nil
+}
+
 func (f *flakyBatchServer) BatchReadBlobs(ctx context.Context, req *repb.BatchReadBlobsRequest) (*repb.BatchReadBlobsResponse, error) {
 	f.readRequests = append(f.readRequests, req)
 	if f.numErrors < 1 {
@@ -282,6 +286,10 @@ type sleepyBatchServer struct {
 
 func (s *sleepyBatchServer) FindMissingBlobs(ctx context.Context, req *repb.FindMissingBlobsRequest) (*repb.FindMissingBlobsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "")
+}
+
+func (f *sleepyBatchServer) FindMissingGraphInputs(*repb.FindMissingGraphInputsRequest, regrpc.ContentAddressableStorage_FindMissingGraphInputsServer) error {
+	return status.Error(codes.Unimplemented, "")
 }
 
 func (s *sleepyBatchServer) GetTree(req *repb.GetTreeRequest, stream regrpc.ContentAddressableStorage_GetTreeServer) error {

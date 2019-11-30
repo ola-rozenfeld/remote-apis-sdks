@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -103,6 +104,77 @@ func (c *callCountingMetadataCache) Get(path string) *filemetadata.Metadata {
 	}
 	c.calls[p]++
 	return c.cache.Get(path)
+}
+
+func TestCompleteMerkleTrees(t *testing.T) {
+	cmds := []*command.Command{
+		&command.Command{
+			InputSpec: &command.InputSpec{
+				Inputs: []string{"a/b/foo", "a/b/bar", "foo", "a/bar"},
+			},
+		},
+		&command.Command{
+			InputSpec: &command.InputSpec{
+				Inputs: []string{"a/b/foo", "a/b/bar", "foo", "a/bar", "bla"},
+			},
+		},
+	}
+	fmt.Printf("ComputeFileTreeMetadata...")
+	roots, chs, err := ComputeFileTreeMetadata(cmds, 10)
+	fmt.Printf("ComputeFileTreeMetadata done")
+	if err != nil {
+		t.Errorf("ComputeFileTreeMetadata returned error: %v", err)
+	}
+	dirs := make(map[digest.Digest]*repb.Directory)
+	for _, ch := range chs {
+		blob, err := ch.FullData()
+		if err != nil {
+			t.Errorf("FullData returned error: %v", err)
+		}
+		dir := &repb.Directory{}
+		if err := proto.Unmarshal(blob, dir); err != nil {
+			t.Errorf("  When unpacking blob, got error: %s", err)
+		}
+		dirs[ch.Digest()] = dir
+	}
+	fooDg := digest.NewFromBlob([]byte("foo"))
+	barDg := digest.NewFromBlob([]byte("barbar"))
+	metas := map[string]*filemetadata.Metadata {
+		"a/b/foo": &filemetadata.Metadata{Digest: fooDg, IsExecutable: true},
+		"foo": &filemetadata.Metadata{Digest: fooDg, IsExecutable: true},
+		"bla": &filemetadata.Metadata{Digest: fooDg},
+		"a/bar": &filemetadata.Metadata{Digest: barDg},
+		"a/b/bar": &filemetadata.Metadata{Digest: barDg},
+	}
+	newRoots, err := CompleteMerkleTrees(roots, dirs, metas)
+	if err != nil {
+		t.Errorf("CompleteMerkleTrees returned error: %v", err)
+	}
+	execRoot, err := ioutil.TempDir("", t.Name())
+	defer os.RemoveAll(execRoot)
+	if err != nil {
+		t.Fatalf("failed to make temp dir: %v", err)
+	}
+	ic := []*inputPath{
+		{path: "a/b/foo", fileContents: []byte("foo"), isExecutable: true},
+		{path: "foo", fileContents: []byte("foo"), isExecutable: true},
+		{path: "bla", fileContents: []byte("foo")},
+		{path: "a/b/bar", fileContents: []byte("barbar")},
+		{path: "a/bar", fileContents: []byte("barbar")},
+	}
+	construct(execRoot, ic)
+	cache := newCallCountingMetadataCache(execRoot, t)
+	var wantRoots []digest.Digest
+	for _, cmd := range cmds {
+		gotRootDg, _, _, err := ComputeMerkleTree(execRoot, cmd.InputSpec, 10, cache)
+		if err != nil {
+			t.Errorf("ComputeMerkleTree failed: %v", err)
+		}
+		wantRoots = append(wantRoots, gotRootDg)
+	}
+	if diff := cmp.Diff(newRoots, wantRoots); diff != "" {
+		t.Errorf("ComputeMerkleTree(...) gave diff (-want +got):\n%s", diff)
+	}
 }
 
 func TestComputeMerkleTree(t *testing.T) {

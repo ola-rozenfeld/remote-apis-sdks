@@ -130,3 +130,8 @@ func (s *Exec) Execute(req *repb.ExecuteRequest, stream regrpc.Execution_Execute
 func (s *Exec) WaitExecution(req *repb.WaitExecutionRequest, stream regrpc.Execution_WaitExecutionServer) (err error) {
 	return status.Error(codes.Unimplemented, "method WaitExecution not implemented by test fake")
 }
+
+// WaitExecution is not implemented on this fake.
+func (s *Exec) ExecuteGraph(stream regrpc.Execution_ExecuteGraphServer) (err error) {
+	return status.Error(codes.Unimplemented, "method ExecuteGraph not implemented by test fake")
+}

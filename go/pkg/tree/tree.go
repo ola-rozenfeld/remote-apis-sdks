@@ -9,12 +9,14 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/chunker"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/command"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/filemetadata"
 
+	log "github.com/golang/glog"
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 )
 
@@ -96,6 +98,144 @@ func loadFiles(execRoot string, excl []*command.InputExclusion, path string, fs 
 	return nil
 }
 
+// CompleteMerkleTrees computes full Merkle trees from metadata roots only.
+func CompleteMerkleTrees(roots []digest.Digest, dirs map[digest.Digest]*repb.Directory, metas map[string]*filemetadata.Metadata) ([]digest.Digest, error) {
+	locks := &sync.Map{} // digest->Mutex
+	oldToNew := &sync.Map{} // digest to digest
+	// Only compute each directory proto once.
+	var gerr error
+	var wg sync.WaitGroup
+	wg.Add(len(roots))
+	newRoots := make([]digest.Digest, len(roots))
+	for n, r := range roots {
+		n, r := n, r // Golang thingy
+		go func() {
+			defer wg.Done()
+			root, err := recomputeDir(r, "", dirs, metas, locks, oldToNew)
+			if err != nil {
+				gerr = err
+			}
+			newRoots[n] = root
+		}()
+	}
+	wg.Wait()
+	return newRoots, gerr
+}
+
+func recomputeDir(root digest.Digest, path string, dirs map[digest.Digest]*repb.Directory, metas map[string]*filemetadata.Metadata, locks *sync.Map, oldToNew *sync.Map) (digest.Digest, error) {
+	mu := &sync.Mutex{}
+	mu.Lock()
+	defer mu.Unlock()
+	l, loaded := locks.LoadOrStore(root, mu)
+	lock, ok := l.(*sync.Mutex)
+	if !ok {
+		return digest.Empty, fmt.Errorf("unexpected type found in lock map")
+	}
+	if loaded {
+		lock.Lock()
+		defer lock.Unlock()
+	}
+
+	if v, ok := oldToNew.Load(root); ok {
+		newRoot, _ := v.(digest.Digest)
+		return newRoot, nil
+	}
+	dir, ok := dirs[root]
+	if !ok {
+		return digest.Empty, fmt.Errorf("didn't find digest %v", root)
+	}
+	newDir := &repb.Directory{}
+	*newDir = *dir
+	for _, node := range newDir.Files {
+		filePath := filepath.Join(path, node.Name)
+		md, ok := metas[filePath]
+		if !ok {
+			return digest.Empty, fmt.Errorf("didn't find metadata for %v", filePath)
+		}
+		node.Digest = md.Digest.ToProto()
+		node.IsExecutable = md.IsExecutable
+	}
+	for _, node := range newDir.Directories {
+		oldDg := digest.NewFromProtoUnvalidated(node.Digest)
+		newDg, err := recomputeDir(oldDg, filepath.Join(path, node.Name), dirs, metas, locks, oldToNew)
+		if err != nil {
+			return digest.Empty, err
+		}
+		node.Digest = newDg.ToProto()
+	}
+	dg, err := digest.NewFromMessage(newDir)
+	oldToNew.Store(root, dg)
+	return dg, err
+}
+
+// ComputeFileTreeMetadata packages the whole file tree metadata into chunks.
+// This does not require os operations, as it is purely syntactic (compress the overall directory structure).
+// Returns a map from commandID to input root metadata digest.
+func ComputeFileTreeMetadata(cmds []*command.Command, chunkSize int) ([]digest.Digest, []*chunker.Chunker, error) {
+	roots := make([]digest.Digest, len(cmds))
+	var mu sync.Mutex
+	blobs := &sync.Map{}
+	var gerr error
+  var wg sync.WaitGroup
+  wg.Add(len(cmds))
+	for n, c := range cmds {
+		n, c := n, c  // Golang thingy
+		go func() {
+			defer wg.Done()
+			fs := make(map[string]*fileNode)
+			for _, i := range c.InputSpec.Inputs {
+				fs[i] = &fileNode{}  // for now, no input directories support.
+			}
+			ft := buildTree(fs)
+			root, err := packageTreeMetadata(ft, blobs, chunkSize)
+			log.V(2).Infof("packageTreeMetadata %v", n)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				gerr = err
+			}
+			roots[n] = root
+		}()
+	}
+  wg.Wait()
+	if gerr != nil {
+		return nil, nil, gerr
+	}
+	var inputs []*chunker.Chunker
+	blobs.Range(func(key, value interface{}) bool {
+		ch, _ := value.(*chunker.Chunker)
+		inputs = append(inputs, ch)
+		return true
+	})
+	return roots, inputs, nil
+}
+
+// ComputeFileTreeMetadata packages the whole file tree metadata into chunks.
+// This does not require os operations, as it is purely syntactic (compress the overall directory structure).
+// Returns a map from commandID to input root metadata digest.
+// No multithreading nonsense.
+func ComputeFileTreeMetadataSimple(cmds []*command.Command, chunkSize int) ([]digest.Digest, []*chunker.Chunker, error) {
+	roots := make([]digest.Digest, len(cmds))
+	blobs := make(map[digest.Digest]*chunker.Chunker)
+	for n, c := range cmds {
+		fs := make(map[string]*fileNode)
+		for _, i := range c.InputSpec.Inputs {
+			fs[i] = &fileNode{}  // for now, no input directories support.
+		}
+		ft := buildTree(fs)
+		root, err := packageTreeMetadataSimple(ft, blobs, chunkSize)
+		if err != nil {
+			return nil, nil, err
+		}
+		roots[n] = root
+	}
+	var inputs []*chunker.Chunker
+	for _, ch := range blobs {
+		inputs = append(inputs, ch)
+	}
+	return roots, inputs, nil
+}
+
 // ComputeMerkleTree packages an InputSpec into uploadable inputs, returned as Chunkers.
 func ComputeMerkleTree(execRoot string, is *command.InputSpec, chunkSize int, cache FileMetadataCache) (root digest.Digest, inputs []*chunker.Chunker, stats *Stats, err error) {
 	stats = &Stats{}
@@ -115,8 +255,8 @@ func ComputeMerkleTree(execRoot string, is *command.InputSpec, chunkSize int, ca
 		fs[i.Path] = &fileNode{chunker.NewFromBlob(i.Contents, chunkSize), i.IsExecutable}
 	}
 	ft := buildTree(fs)
-	var blobs map[digest.Digest]*chunker.Chunker
-	root, blobs, err = packageTree(ft, chunkSize, stats)
+	blobs := make(map[digest.Digest]*chunker.Chunker)
+	root, err = packageTree(ft, blobs, chunkSize, stats)
 	if err != nil {
 		return digest.Empty, nil, nil, err
 	}
@@ -154,26 +294,74 @@ func buildTree(files map[string]*fileNode) *treeNode {
 	return root
 }
 
-func packageTree(t *treeNode, chunkSize int, stats *Stats) (root digest.Digest, blobs map[digest.Digest]*chunker.Chunker, err error) {
+func packageTreeMetadataSimple(t *treeNode, blobs map[digest.Digest]*chunker.Chunker, chunkSize int) (root digest.Digest, err error) {
 	dir := &repb.Directory{}
-	blobs = make(map[digest.Digest]*chunker.Chunker)
 
 	for name, child := range t.Dirs {
-		dg, childBlobs, err := packageTree(child, chunkSize, stats)
+		dg, err := packageTreeMetadataSimple(child, blobs, chunkSize)
 		if err != nil {
-			return digest.Empty, nil, err
+			return digest.Empty, err
 		}
 		dir.Directories = append(dir.Directories, &repb.DirectoryNode{Name: name, Digest: dg.ToProto()})
-		for d, b := range childBlobs {
-			blobs[d] = b
+	}
+	sort.Slice(dir.Directories, func(i, j int) bool { return dir.Directories[i].Name < dir.Directories[j].Name })
+
+	for name := range t.Files {
+		dir.Files = append(dir.Files, &repb.FileNode{Name: name})
+	}
+	sort.Slice(dir.Files, func(i, j int) bool { return dir.Files[i].Name < dir.Files[j].Name })
+
+	ch, err := chunker.NewFromProto(dir, chunkSize)
+	if err != nil {
+		return digest.Empty, err
+	}
+	dg := ch.Digest()
+	blobs[dg] = ch
+	return dg, nil
+}
+
+func packageTreeMetadata(t *treeNode, blobs *sync.Map, chunkSize int) (root digest.Digest, err error) {
+	dir := &repb.Directory{}
+
+	for name, child := range t.Dirs {
+		dg, err := packageTreeMetadata(child, blobs, chunkSize)
+		if err != nil {
+			return digest.Empty, err
 		}
+		dir.Directories = append(dir.Directories, &repb.DirectoryNode{Name: name, Digest: dg.ToProto()})
+	}
+	sort.Slice(dir.Directories, func(i, j int) bool { return dir.Directories[i].Name < dir.Directories[j].Name })
+
+	for name := range t.Files {
+		dir.Files = append(dir.Files, &repb.FileNode{Name: name})
+	}
+	sort.Slice(dir.Files, func(i, j int) bool { return dir.Files[i].Name < dir.Files[j].Name })
+
+	ch, err := chunker.NewFromProto(dir, chunkSize)
+	if err != nil {
+		return digest.Empty, err
+	}
+	dg := ch.Digest()
+	blobs.LoadOrStore(dg, ch)
+	return dg, nil
+}
+
+func packageTree(t *treeNode, blobs map[digest.Digest]*chunker.Chunker, chunkSize int, stats *Stats) (root digest.Digest, err error) {
+	dir := &repb.Directory{}
+
+	for name, child := range t.Dirs {
+		dg, err := packageTree(child, blobs, chunkSize, stats)
+		if err != nil {
+			return digest.Empty, err
+		}
+		dir.Directories = append(dir.Directories, &repb.DirectoryNode{Name: name, Digest: dg.ToProto()})
 	}
 	sort.Slice(dir.Directories, func(i, j int) bool { return dir.Directories[i].Name < dir.Directories[j].Name })
 
 	for name, fn := range t.Files {
 		dg := fn.Chunker.Digest()
-		dir.Files = append(dir.Files, &repb.FileNode{Name: name, Digest: dg.ToProto(), IsExecutable: fn.IsExecutable})
 		blobs[dg] = fn.Chunker
+		dir.Files = append(dir.Files, &repb.FileNode{Name: name, Digest: dg.ToProto(), IsExecutable: fn.IsExecutable})
 		stats.InputFiles++
 		stats.TotalInputBytes += dg.Size
 	}
@@ -181,13 +369,13 @@ func packageTree(t *treeNode, chunkSize int, stats *Stats) (root digest.Digest, 
 
 	ch, err := chunker.NewFromProto(dir, chunkSize)
 	if err != nil {
-		return digest.Empty, nil, err
+		return digest.Empty, err
 	}
 	dg := ch.Digest()
 	blobs[dg] = ch
 	stats.TotalInputBytes += dg.Size
 	stats.InputDirectories++
-	return dg, blobs, nil
+	return dg, nil
 }
 
 // Output represents a leaf output node in a nested directory structure (either a file or a

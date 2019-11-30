@@ -285,6 +285,11 @@ func (f *CAS) FindMissingBlobs(ctx context.Context, req *repb.FindMissingBlobsRe
 	return resp, nil
 }
 
+// FindMissingGraphInputs implements the corresponding RE API function.
+func (f *CAS) FindMissingGraphInputs(*repb.FindMissingGraphInputsRequest, regrpc.ContentAddressableStorage_FindMissingGraphInputsServer) error {
+	return status.Error(codes.Unimplemented, "test fake does not implement method")
+}
+
 // BatchUpdateBlobs implements the corresponding RE API function.
 func (f *CAS) BatchUpdateBlobs(ctx context.Context, req *repb.BatchUpdateBlobsRequest) (*repb.BatchUpdateBlobsResponse, error) {
 	f.mu.Lock()
