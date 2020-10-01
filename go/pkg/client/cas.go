@@ -512,7 +512,7 @@ func (c *Client) GetDirectoryTree(ctx context.Context, d *repb.Digest) (result [
 	pageTok := ""
 	result = []*repb.Directory{}
 	opts := c.RPCOpts()
-	closure := func() error {
+	closure := func(ctx context.Context) error {
 		// Use the low-level GetTree method to avoid retrying twice.
 		stream, err := c.cas.GetTree(ctx, &repb.GetTreeRequest{
 			InstanceName: c.InstanceName,
@@ -536,7 +536,7 @@ func (c *Client) GetDirectoryTree(ctx context.Context, d *repb.Digest) (result [
 		}
 		return nil
 	}
-	if err := c.Retrier.Do(ctx, closure); err != nil {
+	if err := c.Retrier.Do(ctx, func() error { return c.CallWithTimeout(ctx, "GetTree", closure) }); err != nil {
 		return nil, err
 	}
 	return result, nil

@@ -237,7 +237,7 @@ func (c *Client) ExecuteAndWaitProgress(ctx context.Context, req *repb.ExecuteRe
 	opError := false // Are we propagating an Operation status as an error for the retrier's benefit?
 	lastOp := &oppb.Operation{}
 	opts := c.RPCOpts()
-	closure := func() (e error) {
+	closure := func(ctx context.Context) (e error) {
 		var res regrpc.Execution_ExecuteClient
 		// In both cases, use the lower-level methods to avoid retrying twice.
 		if wait {
@@ -275,7 +275,7 @@ func (c *Client) ExecuteAndWaitProgress(ctx context.Context, req *repb.ExecuteRe
 		}
 		return nil
 	}
-	err = c.Retrier.Do(ctx, closure)
+	err = c.Retrier.Do(ctx, func() error { return c.CallWithTimeout(ctx, "Execute", closure) })
 	if err != nil && !opError {
 		return nil, err
 	}

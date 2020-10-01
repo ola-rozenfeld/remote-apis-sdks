@@ -23,7 +23,7 @@ func (c *Client) WriteChunked(ctx context.Context, name string, ch *chunker.Chun
 	cancelCtx, cancel := context.WithCancel(ctx)
 	opts := c.RPCOpts()
 	defer cancel()
-	closure := func() error {
+	closure := func(ctx context.Context) error {
 		ch.Reset() // Retry by starting the stream from the beginning.
 		// TODO(olaola): implement resumable uploads.
 
@@ -59,7 +59,7 @@ func (c *Client) WriteChunked(ctx context.Context, name string, ch *chunker.Chun
 		}
 		return nil
 	}
-	return c.Retrier.Do(cancelCtx, closure)
+	return c.Retrier.Do(cancelCtx, func() error { return c.CallWithTimeout(ctx, "Write", closure) })
 }
 
 // ReadBytes fetches a resource's contents into a byte slice.
@@ -100,7 +100,7 @@ func (c *Client) readStreamed(ctx context.Context, name string, offset, limit in
 	cancelCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	opts := c.RPCOpts()
-	closure := func() error {
+	closure := func(ctx context.Context) error {
 		// Use lower-level Read in order to not retry twice.
 		stream, err := c.byteStream.Read(cancelCtx, &bspb.ReadRequest{
 			ResourceName: name,
@@ -139,6 +139,6 @@ func (c *Client) readStreamed(ctx context.Context, name string, offset, limit in
 		}
 		return nil
 	}
-	e = c.Retrier.Do(cancelCtx, closure)
+	e = c.Retrier.Do(cancelCtx, func() error { return c.CallWithTimeout(ctx, "Read", closure) })
 	return n, e
 }
