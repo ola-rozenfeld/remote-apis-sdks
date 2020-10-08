@@ -16,8 +16,10 @@ import (
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/actas"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/balancer"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/chunker"
+	"github.com/bazelbuild/remote-apis-sdks/go/pkg/digest"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/retry"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -36,9 +38,10 @@ import (
 )
 
 const (
-	scopes      = "https://www.googleapis.com/auth/cloud-platform"
-	authority   = "test-server"
-	localPrefix = "localhost"
+	scopes            = "https://www.googleapis.com/auth/cloud-platform"
+	authority         = "test-server"
+	localPrefix       = "localhost"
+	casChanBufferSize = 10000
 
 	// HomeDirMacro is replaced by the current user's home dir in the CredFile dial parameter.
 	HomeDirMacro = "${HOME}"
@@ -78,13 +81,17 @@ type Client struct {
 	// ExecutableMode is mode used to create executable files.
 	ExecutableMode os.FileMode
 	// RegularMode is mode used to create non-executable files.
-	RegularMode    os.FileMode
-	serverCaps     *repb.ServerCapabilities
-	useBatchOps    UseBatchOps
-	casUploaders   chan bool
-	casDownloaders chan bool
-	rpcTimeouts    RPCTimeouts
-	creds          credentials.PerRPCCredentials
+	RegularMode         os.FileMode
+	serverCaps          *repb.ServerCapabilities
+	useBatchOps         UseBatchOps
+	casConcurrency      int64
+	casUploaders        *semaphore.Weighted
+	casUploadRequests   chan *uploadRequest
+	casUploads          map[digest.Digest]*uploadState
+	casDownloaders      *semaphore.Weighted
+	casDownloadRequests chan *downloadRequest
+	rpcTimeouts         RPCTimeouts
+	creds               credentials.PerRPCCredentials
 }
 
 const (
@@ -108,6 +115,8 @@ const (
 
 // Close closes the underlying gRPC connection(s).
 func (c *Client) Close() error {
+	close(c.casUploadRequests)
+	close(c.casDownloadRequests)
 	err := c.Connection.Close()
 	if err != nil {
 		return err
@@ -173,8 +182,9 @@ const DefaultMaxConcurrentStreams = 25
 
 // Apply sets the CASConcurrency flag on a client.
 func (cy CASConcurrency) Apply(c *Client) {
-	c.casUploaders = make(chan bool, cy)
-	c.casDownloaders = make(chan bool, cy)
+	c.casConcurrency = int64(cy)
+	c.casUploaders = semaphore.NewWeighted(c.casConcurrency)
+	c.casDownloaders = semaphore.NewWeighted(c.casConcurrency)
 }
 
 // StartupCapabilities controls whether the client should attempt to fetch the remote
@@ -365,7 +375,6 @@ func Dial(ctx context.Context, endpoint string, params DialParams) (*grpc.Client
 
 			opts = append(opts, grpc.WithPerRPCCredentials(rpcCreds))
 		}
-
 		tlsConfig, err := createTLSConfig(params)
 		if err != nil {
 			return nil, fmt.Errorf("Could not create TLS config: %v", err)
@@ -432,8 +441,12 @@ func NewClient(ctx context.Context, instanceName string, params DialParams, opts
 		RegularMode:         DefaultRegularMode,
 		useBatchOps:         true,
 		StartupCapabilities: true,
-		casUploaders:        make(chan bool, DefaultCASConcurrency),
-		casDownloaders:      make(chan bool, DefaultCASConcurrency),
+		casConcurrency:      DefaultCASConcurrency,
+		casUploaders:        semaphore.NewWeighted(DefaultCASConcurrency),
+		casDownloaders:      semaphore.NewWeighted(DefaultCASConcurrency),
+		casUploadRequests:   make(chan *uploadRequest, casChanBufferSize),
+		casUploads:          make(map[digest.Digest]*uploadState),
+		casDownloadRequests: make(chan *downloadRequest, casChanBufferSize),
 		Retrier:             RetryTransient(),
 	}
 	for _, o := range opts {
@@ -444,6 +457,11 @@ func NewClient(ctx context.Context, instanceName string, params DialParams, opts
 			return nil, err
 		}
 	}
+	if client.casConcurrency < 1 {
+		return nil, fmt.Errorf("CASConcurrency should be at least 1")
+	}
+	go client.uploadProcessor()
+	go client.downloadProcessor()
 	return client, nil
 }
 
@@ -648,6 +666,7 @@ func (c *Client) BatchUpdateBlobs(ctx context.Context, req *repb.BatchUpdateBlob
 
 // BatchReadBlobs wraps the underlying call with specific client options.
 // NOTE that its retry logic ignores the per-blob errors embedded in the response.
+// It is recommended to use BatchDownloadBlobs instead.
 func (c *Client) BatchReadBlobs(ctx context.Context, req *repb.BatchReadBlobsRequest) (res *repb.BatchReadBlobsResponse, err error) {
 	opts := c.RPCOpts()
 	err = c.Retrier.Do(ctx, func() (e error) {
