@@ -837,7 +837,7 @@ type downloadRequest struct {
 
 func (c *Client) downloadProcessor() {
 	var buffer []*downloadRequest
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(50 * time.Millisecond)
 	for {
 		select {
 		case ch, ok := <-c.casDownloadRequests:
