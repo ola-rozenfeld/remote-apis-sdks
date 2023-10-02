@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package build_event_stream_plugin;
+
+import "go/api/command/command.proto";
+
+option go_package = "github.com/bazelbuild/remote-apis-sdks/go/api/buildeventstream/build_event_stream";
+
+message ActionStarted {
+  string console_printout = 1; // Regular UTF-8 output; normal text (this is the action execution printout).
+  string primary_output = 2; // The file name of the primary output, which identifies the action uniquely.
+}
+
+message ActionCompleted {
+  string action_digest = 1; // The action digest in canonical format <hash>/<size>.
+  cmd.CommandResult result = 2;
+  string stdout_digest = 3; // In canonical format <hash>/<size>.
+  string stderr_digest = 4; // In canonical format <hash>/<size>.
+  // It is currently difficult to rely on the stdout/err being available remotely, so we need to pass the whole thing.
+  string stdout = 7;
+  string stderr = 8;
+  string primary_output = 5; // The file name of the primary output, which identifies the action uniquely.
+  map<string, string> output_file_digests = 6;
+}
+
+message BuildLogs {
+  map<string, string> logs = 1; // Name -> canonical digest. Maybe will be replaced by the Stats.
+}
+
+message BuildMetrics {
+  // TODO: Probably want to move the reclient.Stats here.
+}
+
+// Message describing a build event. More details, which are specific to the kind of event
+// that is observed, is provided in the payload. More options for the payload
+// might be added in the future.
+// This protocol is for RE plugins only -- meaning, the build tool is not aware of the build graph, only
+// of individual actions.
+message BuildEvent {
+  oneof payload {
+    ActionStarted action_started = 1;
+    ActionCompleted action_completed = 2;
+    BuildLogs build_logs = 3;
+    BuildMetrics build_metrics = 4;
+  }
+}

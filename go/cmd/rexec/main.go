@@ -24,6 +24,7 @@ import (
 	"os"
 	"path"
 
+	"github.com/bazelbuild/remote-apis-sdks/go/pkg/client"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/command"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/filemetadata"
 	"github.com/bazelbuild/remote-apis-sdks/go/pkg/moreflag"
@@ -66,6 +67,7 @@ func main() {
 		flag.Usage()
 		log.Exitf("Invalid command provided: %v", err)
 	}
+	cmd.FillDefaultFieldValues()
 
 	ctx := context.Background()
 	grpcClient, err := rflags.NewClientFromFlags(ctx)
@@ -77,7 +79,46 @@ func main() {
 		FileMetadataCache: filemetadata.NewNoopCache(),
 		GrpcClient:        grpcClient,
 	}
-	res, _ := c.Run(ctx, cmd, opt, outerr.SystemOutErr)
+	var bes *client.BuildEventStream
+	if grpcClient.BESConnection != nil {
+		options := make(map[string]string)
+		flag.VisitAll(func(f *flag.Flag) {
+			options[f.Name] = f.Value.String()
+		})
+		meta := &client.BuildMetadata{
+			BuildID:      cmd.Identifiers.CorrelatedInvocationID,
+			InvocationID: cmd.Identifiers.InvocationID,
+			Targets:      []string{"//:x"},
+			ToolName:     "rexec",
+			ToolVersion:  "1.0",
+			Options:      options,
+		}
+		log.Infof("Streaming build results to: https://%s/invocation/%s\n", grpcClient.BESConnection.Target(), meta.InvocationID)
+		bes, err = grpcClient.NewBuildEventStream(ctx, meta)
+		if err != nil {
+			log.Exitf("error connecting to BES service: %v", err)
+		}
+		if err := bes.Start(ctx); err != nil {
+			log.Exitf("error in BES stream start: %v", err)
+		}
+	}
+	if grpcClient.BESConnection != nil {
+		if err := bes.CommandStarted(cmd); err != nil {
+			log.Exitf("error in BES action start: %v", err)
+		}
+	}
+	oe := outerr.NewRecordingOutErr()
+	res, meta := c.Run(ctx, cmd, opt, oe)
+	stdout, stderr := string(oe.Stdout()), string(oe.Stderr())
+	fmt.Fprintf(os.Stdout, stdout)
+	fmt.Fprintf(os.Stderr, stderr)
+	meta.StdoutRaw = stdout
+	meta.StderrRaw = stderr
+	if grpcClient.BESConnection != nil {
+		if err := bes.CommandFinished(cmd, res, meta); err != nil {
+			log.Exitf("error in BES action completed: %v", err)
+		}
+	}
 	switch res.Status {
 	case command.NonZeroExitResultStatus:
 		fmt.Fprintf(os.Stderr, "Remote action FAILED with exit code %d.\n", res.ExitCode)
@@ -89,5 +130,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Remote execution error: %v.\n", res.Err)
 	case command.LocalErrorResultStatus:
 		fmt.Fprintf(os.Stderr, "Local error: %v.\n", res.Err)
+	}
+	if grpcClient.BESConnection != nil {
+		status := &client.BuildStatus{
+			Result: client.CommandSucceededBuildResult,
+		}
+		if !res.IsOk() {
+			status.Result = client.CommandFailedBuildResult
+			status.ExitCode = 1
+		}
+		if err := bes.Finish(ctx, status); err != nil {
+			log.Exitf("error in BES stream finish: %v", err)
+		}
 	}
 }

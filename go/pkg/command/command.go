@@ -187,6 +187,23 @@ type Command struct {
 
 	// Platform is the platform to use for the execution.
 	Platform map[string]string
+
+	primaryOutput string
+}
+
+// This whole function is a RIDICULOUSLY dirty hack. I am thoroughly ashamed.
+func (c *Command) GetPrimaryOutput() string {
+	if c.primaryOutput != "" {
+		return c.primaryOutput
+	}
+	if len(c.OutputFiles) > 0 {
+		c.primaryOutput = c.OutputFiles[0]
+	} else if len(c.OutputDirs) > 0 {
+		c.primaryOutput = c.OutputDirs[0]
+	} else {
+		c.primaryOutput = c.Args[len(c.Args)-1]
+	}
+	return c.primaryOutput
 }
 
 func marshallMap(m map[string]string, buf *[]byte) {
@@ -285,6 +302,9 @@ func (c *Command) FillDefaultFieldValues() {
 	}
 	if c.Identifiers.InvocationID == "" {
 		c.Identifiers.InvocationID = uuid.New()
+	}
+	if c.Identifiers.CorrelatedInvocationID == "" {
+		c.Identifiers.CorrelatedInvocationID = uuid.New()
 	}
 	if c.Identifiers.ExecutionID == "" {
 		c.Identifiers.ExecutionID = uuid.New()
@@ -544,6 +564,9 @@ type Metadata struct {
 	// StdoutDigest is a digest of the standard output after being executed.
 	StdoutDigest digest.Digest
 	// TODO(olaola): Add a lot of other fields.
+	// TODO(ola): this is temporary, need to decide what to do about stdout/err streams.
+	StdoutRaw string
+	StderrRaw string
 }
 
 // ToREProto converts the Command to an RE API Command proto.

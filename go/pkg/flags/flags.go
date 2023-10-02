@@ -47,6 +47,8 @@ var (
 	ServiceNoAuth = flag.Bool("service_no_auth", false, "If true, do not authenticate with the service (implied by --service_no_security).")
 	// CASService represents the host (and, if applicable, port) of the CAS service, if different from the remote execution service.
 	CASService = flag.String("cas_service", "", "The CAS service to dial when calling via gRPC, including port, such as 'localhost:8790' or 'remotebuildexecution.googleapis.com:443'")
+	// BESService represents the host (and, if applicable, port) of the Build Event Service, if different from the remote execution service.
+	BESService = flag.String("bes_service", "", "The BES service endpoint to dial when calling via gRPC, including port, such as 'localhost:8790' or 'remotebuildexecution.googleapis.com:443'")
 	// Instance gives the instance of remote execution to test (in
 	// projects/[PROJECT_ID]/instances/[INSTANCE_NAME] format for Google RBE).
 	Instance = flag.String("instance", "", "The instance ID to target when calling remote execution via gRPC (e.g., projects/$PROJECT/instances/default_instance for Google RBE).")
@@ -128,6 +130,7 @@ func NewClientFromFlags(ctx context.Context, opts ...client.Opt) (*client.Client
 		NoSecurity:            *ServiceNoSecurity,
 		NoAuth:                *ServiceNoAuth,
 		CASService:            *CASService,
+		BESService:            *BESService,
 		CredFile:              *CredFile,
 		DialOpts:              dialOpts,
 		UseApplicationDefault: *UseApplicationDefaultCreds,

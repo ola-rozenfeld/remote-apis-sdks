@@ -36,6 +36,8 @@ import (
 	log "github.com/golang/glog"
 	bsgrpc "google.golang.org/genproto/googleapis/bytestream"
 	bspb "google.golang.org/genproto/googleapis/bytestream"
+	besgrpc "google.golang.org/genproto/googleapis/devtools/build/v1"
+	bespb "google.golang.org/genproto/googleapis/devtools/build/v1"
 	opgrpc "google.golang.org/genproto/googleapis/longrunning"
 	oppb "google.golang.org/genproto/googleapis/longrunning"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
@@ -124,6 +126,7 @@ type Client struct {
 	actionCache   regrpc.ActionCacheClient
 	byteStream    bsgrpc.ByteStreamClient
 	cas           regrpc.ContentAddressableStorageClient
+	bes           besgrpc.PublishBuildEventClient
 	useCasNg      bool
 	ngCasUploader *casng.BatchingUploader
 	execution     regrpc.ExecutionClient
@@ -134,6 +137,7 @@ type Client struct {
 	Retrier       *Retrier
 	Connection    *grpc.ClientConn
 	CASConnection *grpc.ClientConn // Can be different from Connection a separate CAS endpoint is provided.
+	BESConnection *grpc.ClientConn // Can be different from Connection a separate BES endpoint is provided.
 	// StartupCapabilities denotes whether to load ServerCapabilities on startup.
 	StartupCapabilities StartupCapabilities
 	// LegacyExecRootRelativeOutputs denotes whether outputs are relative to the exec root.
@@ -482,6 +486,10 @@ type DialParams struct {
 	// the remote execution service.
 	CASService string
 
+	// BESService contains the address of the Build Event Service, if it is separate from
+	// the remote execution service.
+	BESService string
+
 	// UseApplicationDefault indicates that the default credentials should be used.
 	UseApplicationDefault bool
 
@@ -703,23 +711,35 @@ func NewClient(ctx context.Context, instanceName string, params DialParams, opts
 		log.Infof("Connecting to CAS service %s", params.CASService)
 		casConn, authUsed, err = Dial(ctx, params.CASService, params)
 	}
+	var besConn *grpc.ClientConn
+	if params.BESService != "" {
+		besConn = conn
+		if params.BESService != params.Service {
+			log.Infof("Connecting to BES service %s", params.Service)
+			besConn, authUsed, err = Dial(ctx, params.BESService, params)
+		}
+	}
 	if err != nil {
 		return nil, &InitError{Err: statusWrap(err), AuthUsed: authUsed}
 	}
-	client, err := NewClientFromConnection(ctx, instanceName, conn, casConn, opts...)
+	client, err := NewClientFromConnection(ctx, instanceName, conn, casConn, besConn, opts...)
 	if err != nil {
 		return nil, &InitError{Err: err, AuthUsed: authUsed}
 	}
 	return client, nil
 }
 
-// NewClientFromConnection creates a client from gRPC connections to a remote execution service and a cas service.
-func NewClientFromConnection(ctx context.Context, instanceName string, conn, casConn *grpc.ClientConn, opts ...Opt) (*Client, error) {
+// NewClientFromConnection creates a client from gRPC connections to a remote execution service, a cas service, and a build event service.
+func NewClientFromConnection(ctx context.Context, instanceName string, conn, casConn *grpc.ClientConn, besConn *grpc.ClientConn, opts ...Opt) (*Client, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("connection to remote execution service may not be nil")
 	}
 	if casConn == nil {
 		return nil, fmt.Errorf("connection to CAS service may not be nil")
+	}
+	var besClient bespb.PublishBuildEventClient
+	if besConn != nil {
+		besClient = besgrpc.NewPublishBuildEventClient(besConn)
 	}
 	client := &Client{
 		InstanceName:                  instanceName,
@@ -728,8 +748,10 @@ func NewClientFromConnection(ctx context.Context, instanceName string, conn, cas
 		cas:                           regrpc.NewContentAddressableStorageClient(casConn),
 		execution:                     regrpc.NewExecutionClient(conn),
 		operations:                    opgrpc.NewOperationsClient(conn),
+		bes:                           besClient,
 		rpcTimeouts:                   DefaultRPCTimeouts,
 		Connection:                    conn,
+		BESConnection:                 besConn,
 		CASConnection:                 casConn,
 		CompressedBytestreamThreshold: DefaultCompressedBytestreamThreshold,
 		ChunkMaxSize:                  chunker.DefaultChunkSize,
@@ -934,6 +956,28 @@ func RetryTransient() *Retrier {
 		Backoff:     retry.ExponentialBackoff(225*time.Millisecond, 2*time.Second, retry.Attempts(6)),
 		ShouldRetry: retry.TransientOnly,
 	}
+}
+
+// PublishLifecycleEvent wraps the underlying call with specific client options.
+func (c *Client) PublishLifecycleEvent(ctx context.Context, req *bespb.PublishLifecycleEventRequest) (res *emptypb.Empty, err error) {
+	opts := c.RPCOpts()
+	err = c.Retrier.Do(ctx, func() (e error) {
+		return c.CallWithTimeout(ctx, "PublishLifecycleEvent", func(ctx context.Context) (e error) {
+			res, e = c.bes.PublishLifecycleEvent(ctx, req, opts...)
+			return e
+		})
+	})
+	if err != nil {
+		return nil, statusWrap(err)
+	}
+	return res, nil
+}
+
+// PublishBuildToolEventStream wraps the underlying call with specific client options.
+// The wrapper is here for completeness to provide access to the low-level
+// RPCs. Prefer using the the bes package.
+func (c *Client) PublishBuildToolEventStream(ctx context.Context) (res besgrpc.PublishBuildEvent_PublishBuildToolEventStreamClient, err error) {
+	return c.bes.PublishBuildToolEventStream(ctx, c.RPCOpts()...)
 }
 
 // GetActionResult wraps the underlying call with specific client options.

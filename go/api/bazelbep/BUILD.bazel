@@ -1,0 +1,102 @@
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//proto:def.bzl", "go_proto_library")
+
+proto_library(
+    name = "failure_details_proto",
+    srcs = ["failure_details.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+      "@com_google_protobuf//:descriptor_proto",
+    ]
+)
+
+go_proto_library(
+    name = "failure_details_go_proto",
+    importpath = "github.com/bazelbuild/remote-apis-sdks/go/api/bazelbep/failure_details",
+    proto = ":failure_details_proto",
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "failure_details",
+    embed = [":failure_details_go_proto"],
+    importpath = "github.com/bazelbuild/remote-apis-sdks/go/api/bazelbep/failure_details",
+    visibility = ["//visibility:public"],
+)
+
+proto_library(
+    name = "option_filters_proto",
+    srcs = ["option_filters.proto"],
+    visibility = ["//visibility:public"],
+)
+
+go_proto_library(
+    name = "option_filters_go_proto",
+    importpath = "github.com/bazelbuild/remote-apis-sdks/go/api/bazelbep/options",
+    proto = ":option_filters_proto",
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "option_filters",
+    embed = [":option_filters_go_proto"],
+    importpath = "github.com/bazelbuild/remote-apis-sdks/go/api/bazelbep/options",
+    visibility = ["//visibility:public"],
+)
+
+proto_library(
+    name = "command_line_proto",
+    srcs = ["command_line.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+      ":option_filters_proto",
+    ],
+)
+
+go_proto_library(
+    name = "command_line_go_proto",
+    importpath = "github.com/bazelbuild/remote-apis-sdks/go/api/bazelbep/command_line",
+    proto = ":command_line_proto",
+    visibility = ["//visibility:public"],
+    deps = [
+      ":option_filters",
+    ],
+)
+
+go_library(
+    name = "command_line",
+    embed = [":command_line_go_proto"],
+    importpath = "github.com/bazelbuild/remote-apis-sdks/go/api/bazelbep/command_line",
+    visibility = ["//visibility:public"],
+)
+
+proto_library(
+    name = "build_event_stream_proto",
+    srcs = ["build_event_stream.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+      "@com_google_protobuf//:duration_proto",
+      "@com_google_protobuf//:timestamp_proto",
+      ":command_line_proto",
+      ":failure_details_proto",
+    ],
+)
+
+go_proto_library(
+    name = "build_event_stream_go_proto",
+    importpath = "github.com/bazelbuild/remote-apis-sdks/go/api/bazelbep/build_event_stream",
+    proto = ":build_event_stream_proto",
+    visibility = ["//visibility:public"],
+    deps = [
+      ":command_line",
+      ":failure_details",
+    ],
+)
+
+go_library(
+    name = "build_event_stream",
+    embed = [":build_event_stream_go_proto"],
+    importpath = "github.com/bazelbuild/remote-apis-sdks/go/api/bazelbep/build_event_stream",
+    visibility = ["//visibility:public"],
+)

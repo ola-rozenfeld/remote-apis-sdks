@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/bazelbuild/remote-apis-sdks/go/cmd/rexec",
     visibility = ["//visibility:private"],
     deps = [
+        "//go/pkg/client",
         "//go/pkg/command",
         "//go/pkg/filemetadata",
         "//go/pkg/flags",
